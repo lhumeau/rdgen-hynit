@@ -3,6 +3,7 @@ from pathlib import Path
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, get_object_or_404
 from django.core.files.base import ContentFile
+from django.views.decorators.csrf import csrf_exempt
 import os
 import secrets
 import re
@@ -562,6 +563,7 @@ def create_github_run(myuuid):
     )
     new_github_run.save()
 
+@csrf_exempt
 def update_github_run(request):
     if request.method != 'POST':
         return HttpResponse(status=405)
@@ -683,6 +685,7 @@ def save_png(file, uuid, domain, name):
     #return "%s/%s" % (domain, file_save_path)
     return domain, uuid, name
 
+@csrf_exempt
 def save_custom_client(request):
     if request.method != 'POST':
         return HttpResponse(status=405)
@@ -706,6 +709,7 @@ def save_custom_client(request):
 
     return HttpResponse("File saved successfully!")
 
+@csrf_exempt
 def cleanup_secrets(request):
     if request.method != 'POST':
         return HttpResponse(status=405)
