@@ -3,12 +3,12 @@ import os
 import re
 from django.http import JsonResponse
 from django.conf import settings as _settings
-from .views import generate_custom_client, _get_run_status, _UUID_RE
+from .views import generate_custom_client, _data_path, _get_run_status, _UUID_RE
 
 
 # Field validation constraints (mirrored from GenerateForm)
 PLATFORM_CHOICES = ['windows', 'windows-x86', 'linux', 'android', 'macos']
-VERSION_CHOICES = ['master', '1.5.0']
+VERSION_CHOICES = ['1.5.1', 'master']
 DIRECTION_CHOICES = ['incoming', 'outgoing', 'both']
 INSTALLATION_CHOICES = ['installationY', 'installationN']
 SETTINGS_CHOICES = ['settingsY', 'settingsN']
@@ -53,13 +53,15 @@ def validate_generate_params(data):
     exename = data.get('exename', '')
     if not exename:
         errors['exename'] = 'This field is required.'
+    elif not isinstance(exename, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', exename):
+        errors['exename'] = 'Use 1–64 letters, numbers, underscores, or hyphens.'
     else:
         cleaned['exename'] = exename
 
     # Choice fields
     choice_validations = {
         'platform': (PLATFORM_CHOICES, 'windows'),
-        'version': (VERSION_CHOICES, '1.5.0'),
+        'version': (VERSION_CHOICES, '1.5.1'),
         'direction': (DIRECTION_CHOICES, 'both'),
         'installation': (INSTALLATION_CHOICES, 'installationY'),
         'settings': (SETTINGS_CHOICES, 'settingsY'),
@@ -126,6 +128,8 @@ def api_generate(request):
         data = json.loads(request.body)
     except (json.JSONDecodeError, ValueError) as e:
         return JsonResponse({"success": False, "error": f"Invalid JSON: {str(e)}"}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({"success": False, "error": "JSON body must be an object."}, status=400)
 
     # Optional platform override: allows the caller to overwrite the
     # "platform" key carried in the JSON body (e.g. when the saved config
@@ -294,11 +298,11 @@ def api_status(request):
     # including on failure.
     created_files = []
     if _UUID_RE.match(uuid_val or ''):
-        run_dir = os.path.join('exe', uuid_val)
-        if os.path.isdir(run_dir):
+        run_dir = _data_path('exe', uuid_val)
+        if run_dir.is_dir():
             for name in sorted(os.listdir(run_dir)):
-                full_path = os.path.join(run_dir, name)
-                if os.path.isfile(full_path):
+                full_path = run_dir / name
+                if full_path.is_file():
                     created_files.append(name)
     response_data['files'] = created_files
 

@@ -20,26 +20,63 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY','django-insecure-!(t-!f#6g#sr%yfded9(xha)g+=!6craeez^cp+*&bz_7vdk61')
+SECRET_KEY = os.environ.get('SECRET_KEY', '')
+if not SECRET_KEY:
+    raise RuntimeError('SECRET_KEY is required')
 GHUSER = os.environ.get("GHUSER", '')
 GHBEARER = os.environ.get("GHBEARER", '')
 GENURL = os.environ.get("GENURL", '')
 GHBRANCH = os.environ.get("GHBRANCH",'master')
-ZIP_PASSWORD = os.environ.get("ZIP_PASSWORD",'insecure')
+ZIP_PASSWORD = os.environ.get("ZIP_PASSWORD",'')
 PROTOCOL = os.environ.get("PROTOCOL", 'https')
 REPONAME = os.environ.get("REPONAME", 'rdgen')
-SH_SECRET = os.environ.get('SH_SECRET', 'secret')
+SH_SECRET = os.environ.get('SH_SECRET', '__disabled__')
+RDGEN_CALLBACK_TOKEN = os.environ.get('RDGEN_CALLBACK_TOKEN', '')
+if not ZIP_PASSWORD:
+    raise RuntimeError('ZIP_PASSWORD is required')
+if not RDGEN_CALLBACK_TOKEN:
+    raise RuntimeError('RDGEN_CALLBACK_TOKEN is required')
+RDGEN_MAX_CLIENT_BYTES = int(os.environ.get('RDGEN_MAX_CLIENT_BYTES', str(90 * 1024 * 1024)))
+RDGEN_DATA_DIR = Path(os.environ.get('RDGEN_DATA_DIR', str(BASE_DIR / 'data'))).resolve()
+RDGEN_CLIENT_SERVER = os.environ.get('RDGEN_CLIENT_SERVER', '')
+RDGEN_CLIENT_PORT = os.environ.get('RDGEN_CLIENT_PORT', '21116')
+RDGEN_CLIENT_KEY = os.environ.get('RDGEN_CLIENT_KEY', '')
+RDGEN_CLIENT_API = os.environ.get('RDGEN_CLIENT_API', '')
+RDGEN_CLIENT_DEFAULT_SETTINGS = os.environ.get('RDGEN_CLIENT_DEFAULT_SETTINGS', 'allow-websocket=Y')
+RDGEN_CLIENT_APP_NAME = os.environ.get('RDGEN_CLIENT_APP_NAME', 'HYNIT Remote Support')
+RDGEN_CLIENT_FILENAME = os.environ.get('RDGEN_CLIENT_FILENAME', 'HYNITRemoteSupport')
+RDGEN_CLIENT_COMPANY = os.environ.get('RDGEN_CLIENT_COMPANY', 'HYNIT')
+RDGEN_CLIENT_URL = os.environ.get('RDGEN_CLIENT_URL', '')
+RDGEN_CLIENT_DOWNLOAD_URL = os.environ.get('RDGEN_CLIENT_DOWNLOAD_URL', '')
+RDGEN_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_ROOT = RDGEN_DATA_DIR / 'media'
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG_ENV = os.environ.get("DEBUG", "False")
 DEBUG = DEBUG_ENV.lower() in ['true', '1', 't']
 
-ALLOWED_HOSTS = ['*']
-#CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split()
+ALLOWED_HOSTS = [host.strip() for host in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if origin.strip()]
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+SECURE_SSL_REDIRECT = False  # TLS terminates at the trusted host Nginx/Cloudflare Tunnel.
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = 'Lax'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+X_FRAME_OPTIONS = 'DENY'
+SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+SECURE_HSTS_PRELOAD = False
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024
 
 # Application definition
 
@@ -57,7 +94,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    #'django.middleware.csrf.CsrfViewMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -90,14 +127,11 @@ WSGI_APPLICATION = 'rdgen.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': RDGEN_DATA_DIR / 'db.sqlite3',
         'OPTIONS': {
-            # WAL mode allows concurrent readers plus one writer without
-            # blocking readers, which is important when multiple GitHub
-            # Action runners hit save_custom_client / updategh at once.
-            # busy_timeout makes writers wait instead of failing immediately
-            # when the DB file is briefly locked.
-            'init_command': "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000; PRAGMA synchronous=NORMAL;",
+            # Wait for a concurrent callback writer rather than failing
+            # immediately when multiple GitHub Actions finish together.
+            'timeout': 30,
         },
     }
 }

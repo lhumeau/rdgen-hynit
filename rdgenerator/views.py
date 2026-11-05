@@ -1,6 +1,6 @@
 import io
 from pathlib import Path
-from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, get_object_or_404
 from django.core.files.base import ContentFile
 import os
@@ -31,6 +31,16 @@ def _safe_parts(uuid_val, filename):
     return True
 
 
+def _callback_authorized(request):
+    expected = _settings.RDGEN_CALLBACK_TOKEN
+    supplied = request.headers.get('X-RDGen-Callback-Token', '')
+    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+
+
+def _data_path(*parts):
+    return _settings.RDGEN_DATA_DIR.joinpath(*parts)
+
+
 def generate_custom_client(params, full_url):
     """
     Core generation logic shared by web form and JSON API.
@@ -46,7 +56,7 @@ def generate_custom_client(params, full_url):
     user_secret = params.get('sh_secret_field', '')
     selfhosted = (_settings.SH_SECRET == user_secret)
     platform = params.get('platform', 'windows')
-    version = params.get('version', '1.5.0')
+    version = params.get('version', '1.5.1')
     app_version = params.get('app_version', '')
     # app_version overrides the version string embedded in the built client
     # without changing the git tag that version selects. If left empty, the
@@ -68,28 +78,28 @@ def generate_custom_client(params, full_url):
     urlLink = params.get('urlLink', '')
     downloadLink = params.get('downloadLink', '')
     if not server:
-        server = 'rs-ny.rustdesk.com' #default rustdesk server
+        server = _settings.RDGEN_CLIENT_SERVER or 'rs-ny.rustdesk.com'
     if not serverPort:
-        serverPort = '21116' #default rustdesk rendezvous port
+        serverPort = _settings.RDGEN_CLIENT_PORT or '21116'
     if not key:
-        key = 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=' #default rustdesk key
+        key = _settings.RDGEN_CLIENT_KEY or 'OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw='
     if not apiServer:
-        apiServer = server+":21114"
+        apiServer = _settings.RDGEN_CLIENT_API or server+":21114"
     if not urlLink:
-        urlLink = "https://rustdesk.com"
+        urlLink = _settings.RDGEN_CLIENT_URL or "https://rustdesk.com"
     if not downloadLink:
-        downloadLink = "https://rustdesk.com/download"
+        downloadLink = _settings.RDGEN_CLIENT_DOWNLOAD_URL or "https://rustdesk.com/download"
     direction = params.get('direction', 'both')
     installation = params.get('installation', 'installationY')
     settings = params.get('settings', 'settingsY')
     appname_display = params.get('appname', '')
     if not appname_display:
-        appname_display = "rustdesk"
+        appname_display = _settings.RDGEN_CLIENT_APP_NAME or "rustdesk"
     appname = re.sub(r"[:|\\/]", "", appname_display).replace(" ", "")
-    filename = params.get('exename', 'rustdesk')
+    filename = params.get('exename', '') or _settings.RDGEN_CLIENT_FILENAME or 'rustdesk'
     compname = params.get('compname', '')
     if not compname:
-        compname = "Purslane Ltd"
+        compname = _settings.RDGEN_CLIENT_COMPANY or "Purslane Ltd"
     androidappid = params.get('androidappid', '')
     if not androidappid:
         androidappid = "com.carriez.flutter_hbb"
@@ -113,7 +123,7 @@ def generate_custom_client(params, full_url):
     enableBlockingInput = params.get('enableBlockingInput', True)
     enableRemoteModi = params.get('enableRemoteModi', False)
     removeWallpaper = params.get('removeWallpaper', True)
-    defaultManual = params.get('defaultManual', '')
+    defaultManual = params.get('defaultManual') or _settings.RDGEN_CLIENT_DEFAULT_SETTINGS
     overrideManual = params.get('overrideManual', '')
     enablePrinter = params.get('enablePrinter', True)
     enableCamera = params.get('enableCamera', True)
@@ -161,7 +171,7 @@ def generate_custom_client(params, full_url):
 
     ###create the custom.txt json here and send in as inputs below
     decodedCustom = {}
-    if direction != "Both":
+    if direction != "both":
         decodedCustom['conn-type'] = direction
     if installation == "installationN":
         decodedCustom['disable-installation'] = 'Y'
@@ -298,10 +308,11 @@ def generate_custom_client(params, full_url):
         "filename":filename
     }
 
-    temp_json_path = f"data_{uuid.uuid4()}.json"
-    zip_filename = f"secrets_{uuid.uuid4()}.zip"
-    zip_path = "temp_zips/%s" % (zip_filename)
-    Path("temp_zips").mkdir(parents=True, exist_ok=True)
+    temp_json_path = _data_path(f"data_{myuuid}.json")
+    zip_filename = f"secrets_{myuuid}.zip"
+    zip_dir = _data_path('temp_zips')
+    zip_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = zip_dir / zip_filename
 
     with open(temp_json_path, "w") as f:
         json.dump(inputs_raw, f)
@@ -476,9 +487,11 @@ def check_for_file(request):
     uuid = request.GET.get('uuid')
     platform = request.GET.get('platform')
 
+    if platform not in ('windows', 'windows-x86', 'linux', 'android', 'macos') or not _safe_parts(uuid, filename):
+        raise Http404("Invalid build request")
+
     result = _get_run_status(uuid)
     if not result['found']:
-        from django.http import Http404
         raise Http404("Run not found")
 
     gh_run = result['gh_run']
@@ -489,8 +502,8 @@ def check_for_file(request):
         existing_files = []
         missing_files = []
         for f in expected:
-            file_path = os.path.join('exe', uuid, f)
-            if os.path.isfile(file_path):
+            file_path = _data_path('exe', uuid, f)
+            if file_path.is_file():
                 existing_files.append(f)
             else:
                 missing_files.append(f)
@@ -523,32 +536,24 @@ def check_for_file(request):
         })
 
 def download(request):
-    filename = request.GET['filename']
-    uuid = request.GET['uuid']
+    filename = request.GET.get('filename', '')
+    uuid = request.GET.get('uuid', '')
     if not _safe_parts(uuid, filename):
         return HttpResponseForbidden("Invalid filename")
-    file_path = os.path.join('exe', uuid, filename)
-    with open(file_path, 'rb') as file:
-        content = file.read()
-    response = HttpResponse(content, headers={
-        'Content-Type': 'application/vnd.microsoft.portable-executable',
-        'Content-Disposition': f'attachment; filename="{filename}"'
-    })
-    return response
+    file_path = _data_path('exe', uuid, filename)
+    if not file_path.is_file():
+        raise Http404("Build file not found")
+    return FileResponse(file_path.open('rb'), as_attachment=True, filename=filename)
 
 def get_png(request):
-    filename = request.GET['filename']
-    uuid = request.GET['uuid']
-    if not _safe_parts(uuid, filename):
+    filename = request.GET.get('filename', '')
+    uuid = request.GET.get('uuid', '')
+    if not _safe_parts(uuid, filename) or filename not in ('icon.png', 'logo.png', 'privacy.png'):
         return HttpResponseForbidden("Invalid filename")
-    file_path = os.path.join('png',uuid,filename)
-    with open(file_path, 'rb') as file:
-        response = HttpResponse(file, headers={
-            'Content-Type': 'application/vnd.microsoft.portable-executable',
-            'Content-Disposition': f'attachment; filename="{filename}"'
-        })
-
-    return response
+    file_path = _data_path('png', uuid, filename)
+    if not file_path.is_file():
+        raise Http404("Image not found")
+    return FileResponse(file_path.open('rb'), content_type='image/png')
 
 def create_github_run(myuuid):
     new_github_run = GithubRun(
@@ -558,10 +563,27 @@ def create_github_run(myuuid):
     new_github_run.save()
 
 def update_github_run(request):
-    data = json.loads(request.body)
+    if request.method != 'POST':
+        return HttpResponse(status=405)
+    if not _callback_authorized(request):
+        return HttpResponseForbidden("Unauthorized callback")
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return HttpResponse("Invalid JSON", status=400)
+    if not isinstance(data, dict):
+        return HttpResponse("Invalid JSON object", status=400)
     myuuid = data.get('uuid')
     mystatus = data.get('status')
-    GithubRun.objects.filter(Q(uuid=myuuid)).update(status=mystatus)
+    allowed_statuses = {
+        'Starting generator...please wait', 'queued', 'in_progress', 'completed',
+        'success', 'failure', 'cancelled', 'timed_out', 'skipped', 'action_required',
+    }
+    if not _safe_parts(myuuid, None) or mystatus not in allowed_statuses:
+        return HttpResponse("Invalid callback payload", status=400)
+    updated = GithubRun.objects.filter(Q(uuid=myuuid)).update(status=mystatus)
+    if not updated:
+        return HttpResponse("Run not found", status=404)
     return HttpResponse('')
 
 def resize_and_encode_icon(imagefile):
@@ -635,8 +657,9 @@ def startgh(request):
     return HttpResponse(status=204)
 
 def save_png(file, uuid, domain, name):
-    file_save_path = "png/%s/%s" % (uuid, name)
-    Path("png/%s" % uuid).mkdir(parents=True, exist_ok=True)
+    image_dir = _data_path('png', uuid)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    file_save_path = image_dir / name
 
     if isinstance(file, str):  # Check if it's a base64 string
         try:
@@ -650,7 +673,7 @@ def save_png(file, uuid, domain, name):
             print(f"Error decoding base64: {e}")
             return None
         
-    with open(file_save_path, "wb+") as f:
+    with file_save_path.open("wb+") as f:
         for chunk in file.chunks():
             f.write(chunk)
     # imageJson = {}
@@ -661,53 +684,65 @@ def save_png(file, uuid, domain, name):
     return domain, uuid, name
 
 def save_custom_client(request):
-    file = request.FILES['file']
+    if request.method != 'POST':
+        return HttpResponse(status=405)
+    if not _callback_authorized(request):
+        return HttpResponseForbidden("Unauthorized callback")
+    file = request.FILES.get('file')
     myuuid = request.POST.get('uuid')
-    if not _safe_parts(myuuid, file.name):
+    if not file or not _safe_parts(myuuid, file.name):
         return HttpResponseForbidden("Invalid filename")
-    file_save_path = "exe/%s/%s" % (myuuid, file.name)
-    Path("exe/%s" % myuuid).mkdir(parents=True, exist_ok=True)
-    with open(file_save_path, "wb+") as f:
+    allowed_extensions = {'.exe', '.msi', '.apk', '.deb', '.rpm', '.zst', '.appimage', '.flatpak', '.dmg'}
+    if file.size <= 0 or file.size > _settings.RDGEN_MAX_CLIENT_BYTES:
+        return HttpResponse("Invalid file size", status=413)
+    if Path(file.name).suffix.lower() not in allowed_extensions:
+        return HttpResponseForbidden("Unsupported file type")
+    output_dir = _data_path('exe', myuuid)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    file_save_path = output_dir / file.name
+    with file_save_path.open("wb+") as f:
         for chunk in file.chunks():
             f.write(chunk)
 
     return HttpResponse("File saved successfully!")
 
 def cleanup_secrets(request):
+    if request.method != 'POST':
+        return HttpResponse(status=405)
+    if not _callback_authorized(request):
+        return HttpResponseForbidden("Unauthorized callback")
     # Pass the UUID as a query param or in JSON body
-    data = json.loads(request.body)
+    try:
+        data = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return HttpResponse("Invalid JSON", status=400)
+    if not isinstance(data, dict):
+        return HttpResponse("Invalid JSON object", status=400)
     my_uuid = data.get('uuid')
-    
-    if not my_uuid:
-        return HttpResponse("Missing UUID", status=400)
+    if not _safe_parts(my_uuid, None):
+        return HttpResponse("Invalid UUID", status=400)
 
-    # 1. Find the files in your temp directory matching the UUID
-    temp_dir = os.path.join('temp_zips')
+    temp_dir = _data_path('temp_zips')
     
     # We look for any file starting with 'secrets_' and containing the uuid
-    for filename in os.listdir(temp_dir):
-        if my_uuid in filename and filename.endswith('.zip'):
-            file_path = os.path.join(temp_dir, filename)
-            try:
-                os.remove(file_path)
-                print(f"Successfully deleted {file_path}")
-            except OSError as e:
-                print(f"Error deleting file: {e}")
+    filename = f"secrets_{my_uuid}.zip"
+    file_path = temp_dir / filename
+    file_path.unlink(missing_ok=True)
 
     return HttpResponse("Cleanup successful", status=200)
 
 def get_zip(request):
-    filename = request.GET['filename']
-    base_dir = os.path.abspath('temp_zips')
-    file_path = os.path.abspath(os.path.join(base_dir, filename))
-    if not file_path.startswith(base_dir + os.sep):
+    if request.method != 'GET':
+        return HttpResponse(status=405)
+    if not _callback_authorized(request):
+        return HttpResponseForbidden("Unauthorized callback")
+    filename = request.GET.get('filename', '')
+    match = re.fullmatch(r'secrets_([0-9a-fA-F-]{36})\.zip', filename)
+    if not match or not _safe_parts(match.group(1), None):
         return HttpResponseForbidden("Invalid filename")
-    with open(file_path, 'rb') as file:
-        response = HttpResponse(file, headers={
-            'Content-Type': 'application/vnd.microsoft.portable-executable',
-            'Content-Disposition': f'attachment; filename="{filename}"'
-        })
-
-    return response
+    file_path = _data_path('temp_zips', filename)
+    if not file_path.is_file():
+        raise Http404("Secrets archive not found")
+    return FileResponse(file_path.open('rb'), as_attachment=True, filename=filename)
 
 

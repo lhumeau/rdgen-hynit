@@ -1,4 +1,5 @@
 import re
+import os
 
 from django import forms
 from PIL import Image
@@ -12,7 +13,7 @@ class GenerateForm(forms.Form):
     sh_secret_field = forms.CharField(required=False)
     #Platform
     platform = forms.ChoiceField(choices=[('windows','Windows 64Bit'),('windows-x86','Windows 32Bit'),('linux','Linux'),('android','Android'),('macos','macOS')], initial='windows')
-    version = forms.ChoiceField(choices=[('master','nightly'),('1.5.0','1.5.0')], initial='1.5.0')
+    version = forms.ChoiceField(choices=[('1.5.1','1.5.1'),('master','nightly')], initial='1.5.1')
     help_text="'master' is the development version (nightly build) with the latest features but may be less stable"
     delayFix = forms.BooleanField(initial=True, required=False)
 
@@ -92,6 +93,30 @@ class GenerateForm(forms.Form):
     #custom added features
     xOffline = forms.BooleanField(initial=False, required=False)
     removeNewVersionNotif = forms.BooleanField(initial=False, required=False)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        defaults = {
+            'exename': os.environ.get('RDGEN_CLIENT_FILENAME', 'HYNITRemoteSupport'),
+            'appname': os.environ.get('RDGEN_CLIENT_APP_NAME', 'HYNIT Remote Support'),
+            'compname': os.environ.get('RDGEN_CLIENT_COMPANY', 'HYNIT'),
+            'serverIP': os.environ.get('RDGEN_CLIENT_SERVER', ''),
+            'serverPort': os.environ.get('RDGEN_CLIENT_PORT', '21116'),
+            'key': os.environ.get('RDGEN_CLIENT_KEY', ''),
+            'apiServer': os.environ.get('RDGEN_CLIENT_API', ''),
+            'urlLink': os.environ.get('RDGEN_CLIENT_URL', ''),
+            'downloadLink': os.environ.get('RDGEN_CLIENT_DOWNLOAD_URL', ''),
+            'defaultManual': os.environ.get('RDGEN_CLIENT_DEFAULT_SETTINGS', 'allow-websocket=Y'),
+        }
+        for field, value in defaults.items():
+            if value:
+                self.fields[field].initial = value
+
+    def clean_exename(self):
+        value = self.cleaned_data['exename']
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', value):
+            raise forms.ValidationError('Use 1–64 letters, numbers, underscores, or hyphens.')
+        return value
 
     def clean_iconfile(self):
         print("checking icon")
