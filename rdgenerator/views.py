@@ -96,7 +96,10 @@ def generate_custom_client(params, full_url):
     appname_display = params.get('appname', '')
     if not appname_display:
         appname_display = _settings.RDGEN_CLIENT_APP_NAME or "rustdesk"
-    appname = re.sub(r"[:|\\/]", "", appname_display).replace(" ", "")
+    # RustDesk's internal app-name accepts only letters, digits, underscores,
+    # and hyphens. Keep the human-readable label for the form, but pass a
+    # safe identifier to the client configuration and build workflows.
+    appname = re.sub(r'[^A-Za-z0-9_-]', '', appname_display) or 'rustdesk'
     filename = params.get('exename', '') or _settings.RDGEN_CLIENT_FILENAME or 'rustdesk'
     compname = params.get('compname', '')
     if not compname:
@@ -135,8 +138,6 @@ def generate_custom_client(params, full_url):
         filename = filename.replace(" ","_")
     else:
         filename = "rustdesk"
-    if not all(char.isascii() for char in appname):
-        appname = "rustdesk"
     myuuid = str(uuid.uuid4())
 
     try:
@@ -178,8 +179,8 @@ def generate_custom_client(params, full_url):
         decodedCustom['disable-installation'] = 'Y'
     if settings == "settingsN":
         decodedCustom['disable-settings'] = 'Y'
-    if appname.upper != "rustdesk".upper and appname != "":
-        decodedCustom['app-name'] = appname_display
+    if appname.casefold() != "rustdesk":
+        decodedCustom['app-name'] = appname
     decodedCustom['override-settings'] = {}
     decodedCustom['default-settings'] = {}
     if permPass != "":
